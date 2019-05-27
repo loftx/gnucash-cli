@@ -1600,18 +1600,18 @@ class Error(Exception):
 
 if __name__ == "__main__":
 
-    arguments = sys.argv[1:]
+    #arguments = sys.argv[1:]
 
-    if len(arguments) == 0:
-        print 'Usage: gncli.py <type> <command> <file or connection string>'
-        sys.exit(2)
+    import argparse
 
-    type = arguments[0]
-    command = arguments[1]
-    connection_string = arguments[2]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("command", help="the command to run")
+    parser.add_argument("subcommand", help="the subcommand to run")
+    parser.add_argument("connection_string", help="the file or database to connect to")
+    args = parser.parse_args()
 
-    if type == 'book':
-        if command == 'new':
+    if args.command == 'book':
+        if args.subcommand == 'new':
             
             try:
                 start_session(connection_string, True, False)
@@ -1624,9 +1624,9 @@ if __name__ == "__main__":
 
         else:
             print 'Command not found'
-    elif type == 'customer':
+    elif args.command == 'customer':
 
-        if command == 'new':
+        if args.subcommand == 'new':
 
             print arguments
 
@@ -1659,3 +1659,10 @@ if __name__ == "__main__":
 
     else:
         print 'Type not found'
+
+
+#    try:
+#        options, arguments = getopt.getopt(sys.argv[1:], 'nh:', ['host=', 'new='])
+#    except getopt.GetoptError as err:
+#        print 'Usage: gncli.py <connection string>'
+#        sys.exit(2)
