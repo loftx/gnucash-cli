@@ -28,9 +28,17 @@ Boston, MA 02110-1301, USA gnu@gnu.org
 
 '''
 
-import sys, getopt
-import re
 import gnucash
+import gnucash_simple
+import json
+import atexit
+from functools import wraps
+import re
+import sys
+
+# to resolve bug in http://stackoverflow.com/questions/2427240/thread-safe-equivalent-to-pythons-time-strptime
+import _strptime
+import datetime
 
 from decimal import Decimal
 
@@ -73,6 +81,1387 @@ from gnucash.gnucash_core_c import \
 
 # define globals for compatiblity with Gnucash rest
 session = None
+
+def get_customers(book):
+
+    query = gnucash.Query()
+    query.search_for('gncCustomer')
+    query.set_book(book)
+    customers = []
+
+    for result in query.run():
+        customers.append(gnucash_simple.customerToDict(
+            gnucash.gnucash_business.Customer(instance=result)))
+
+    query.destroy()
+
+    return customers
+
+def get_customer(book, id):
+
+    customer = book.CustomerLookupByID(id)
+
+    if customer is None:
+        return None
+    else:
+        return gnucash_simple.customerToDict(customer)
+
+def get_vendors(book):
+
+    query = gnucash.Query()
+    query.search_for('gncVendor')
+    query.set_book(book)
+    vendors = []
+
+    for result in query.run():
+        vendors.append(gnucash_simple.vendorToDict(
+            gnucash.gnucash_business.Vendor(instance=result)))
+
+    query.destroy()
+
+    return vendors
+
+def get_vendor(book, id):
+
+    vendor = book.VendorLookupByID(id)
+
+    if vendor is None:
+        return None
+    else:
+        return gnucash_simple.vendorToDict(vendor)
+
+def get_accounts(book):
+
+    accounts = gnucash_simple.accountToDict(book.get_root_account())
+
+    return accounts
+
+def get_account(book, guid):
+
+    account_guid = gnucash.gnucash_core.GUID() 
+    gnucash.gnucash_core.GUIDString(guid, account_guid)
+
+    account = account_guid.AccountLookup(book)
+
+    if account is None:
+        return None
+
+    account = gnucash_simple.accountToDict(account)
+
+    if account is None:
+        return None
+    else:
+        return account
+
+def get_account_splits(book, guid, date_posted_from, date_posted_to):
+
+    account_guid = gnucash.gnucash_core.GUID() 
+    gnucash.gnucash_core.GUIDString(guid, account_guid)
+
+    query = gnucash.Query()
+    query.search_for('Split')
+    query.set_book(book)
+
+    SPLIT_TRANS= 'trans'
+
+    QOF_DATE_MATCH_NORMAL = 1
+
+    TRANS_DATE_POSTED = 'date-posted'
+
+    if date_posted_from is not None:
+        try:
+            date_posted_from = datetime.datetime.strptime(date_posted_from, "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDatePostedFrom',
+                'The date posted from must be provided in the form YYYY-MM-DD',
+                {'field': 'date_posted_from'})
+
+        pred_data = gnucash.gnucash_core.QueryDatePredicate(
+            QOF_COMPARE_GTE, QOF_DATE_MATCH_NORMAL, date_posted_from.date())
+        param_list = [SPLIT_TRANS, TRANS_DATE_POSTED]
+        query.add_term(param_list, pred_data, QOF_QUERY_AND)
+
+    if date_posted_to is not None:
+
+        try:
+            date_posted_to = datetime.datetime.strptime(date_posted_to, "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDatePostedTo',
+                'The date posted to must be provided in the form YYYY-MM-DD',
+                {'field': 'date_posted_from'})
+
+        pred_data = gnucash.gnucash_core.QueryDatePredicate(
+            QOF_COMPARE_LTE, QOF_DATE_MATCH_NORMAL, date_posted_to.date())
+        param_list = [SPLIT_TRANS, TRANS_DATE_POSTED]
+        query.add_term(param_list, pred_data, QOF_QUERY_AND)
+    
+    SPLIT_ACCOUNT = 'account'
+    QOF_PARAM_GUID = 'guid'
+
+    if guid is not None:
+        gnucash.gnucash_core.GUIDString(guid, account_guid)
+        query.add_guid_match(
+            [SPLIT_ACCOUNT, QOF_PARAM_GUID], account_guid, QOF_QUERY_AND)
+
+    splits = []
+
+    for split in query.run():
+        splits.append(gnucash_simple.splitToDict(
+            gnucash.gnucash_business.Split(instance=split),
+            ['account', 'transaction', 'other_split']))
+
+    query.destroy()
+
+    return splits
+
+# Might be a good idea to pass though these options as properties instead
+def get_invoices(book, properties):
+
+    defaults = [
+        'customer',
+        'is_posted',
+        'is_paid',
+        'is_active',
+        'date_opened_from',
+        'date_opened_to',
+        'date_due_to',
+        'date_due_from',
+        'date_posted_to',
+        'date_posted_from'
+    ]
+
+    for default in defaults:
+        if default not in properties.keys():
+            properties[default] = None
+
+    query = gnucash.Query()
+    query.search_for('gncInvoice')
+    query.set_book(book)
+
+    if properties['is_posted'] == 0:
+        query.add_boolean_match([INVOICE_IS_POSTED], False, QOF_QUERY_AND)
+    elif properties['is_posted'] == 1:
+        query.add_boolean_match([INVOICE_IS_POSTED], True, QOF_QUERY_AND)
+
+    if properties['is_paid'] == 0:
+        query.add_boolean_match([INVOICE_IS_PAID], False, QOF_QUERY_AND)
+    elif properties['is_paid'] == 1:
+        query.add_boolean_match([INVOICE_IS_PAID], True, QOF_QUERY_AND)
+
+    # active = JOB_IS_ACTIVE
+    if properties['is_active'] == 0:
+        query.add_boolean_match(['active'], False, QOF_QUERY_AND)
+    elif properties['is_active'] == 1:
+        query.add_boolean_match(['active'], True, QOF_QUERY_AND)
+
+    QOF_PARAM_GUID = 'guid'
+    INVOICE_OWNER = 'owner'
+
+    if properties['customer'] is not None:
+        customer_guid = gnucash.gnucash_core.GUID() 
+        gnucash.gnucash_core.GUIDString(properties['customer'], customer_guid)
+        query.add_guid_match(
+            [INVOICE_OWNER, QOF_PARAM_GUID], customer_guid, QOF_QUERY_AND)
+
+    if properties['date_due_from'] is not None:
+        try:
+            properties['date_due_from'] = datetime.datetime.strptime(properties['date_due_from'], "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDateDueFrom',
+                'The date due from to must be provided in the form YYYY-MM-DD',
+                {'field': 'date_due_from'})
+
+        pred_data = gnucash.gnucash_core.QueryDatePredicate(
+            QOF_COMPARE_GTE, 2, properties['date_due_from'].date())
+        query.add_term(['date_due'], pred_data, QOF_QUERY_AND)
+
+    if properties['date_due_to'] is not None:
+        try:
+            properties['date_due_to'] = datetime.datetime.strptime(properties['date_due_to'], "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDateDueTo',
+                'The date due from to must be provided in the form YYYY-MM-DD',
+                {'field': 'date_due_to'})
+
+        pred_data = gnucash.gnucash_core.QueryDatePredicate(
+            QOF_COMPARE_LTE, 2, properties['date_due_to'].date())
+        query.add_term(['date_due'], pred_data, QOF_QUERY_AND)
+
+    if properties['date_opened_from'] is not None:
+        try:
+            properties['date_opened_from'] = datetime.datetime.strptime(properties['date_opened_from'], "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDateOpenedFrom',
+                'The date due from to must be provided in the form YYYY-MM-DD',
+                {'field': 'date_opened_from'})
+
+        pred_data = gnucash.gnucash_core.QueryDatePredicate(
+            QOF_COMPARE_GTE, 2, properties['date_opened_from'].date())
+        query.add_term(['date_opened'], pred_data, QOF_QUERY_AND)
+
+    if properties['date_opened_to'] is not None:
+        try:
+            properties['date_opened_to'] = datetime.datetime.strptime(properties['date_opened_to'], "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDateOpenedTo',
+                'The date due from to must be provided in the form YYYY-MM-DD',
+                {'field': 'date_opened_to'})
+
+        pred_data = gnucash.gnucash_core.QueryDatePredicate(
+            QOF_COMPARE_LTE, 2, properties['date_opened_to'].date())
+        query.add_term(['date_opened'], pred_data, QOF_QUERY_AND)
+
+    if properties['date_posted_from'] is not None:
+        try:
+            properties['date_posted_from'] = datetime.datetime.strptime(properties['date_posted_from'], "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDatePostedFrom',
+                'The date due from to must be provided in the form YYYY-MM-DD',
+                {'field': 'date_posted_from'})
+
+        pred_data = gnucash.gnucash_core.QueryDatePredicate(
+            QOF_COMPARE_GTE, 2, properties['date_posted_from'].date())
+        query.add_term(['date_posted'], pred_data, QOF_QUERY_AND)
+
+    if properties['date_posted_to'] is not None:
+        try:
+            properties['date_posted_to'] = datetime.datetime.strptime(properties['date_posted_to'], "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDatePostedTo',
+                'The date due from to must be provided in the form YYYY-MM-DD',
+                {'field': 'date_posted_to'})
+
+        pred_data = gnucash.gnucash_core.QueryDatePredicate(
+            QOF_COMPARE_LTE, 2, properties['date_posted_to'].date())
+        query.add_term(['date_posted'], pred_data, QOF_QUERY_AND)
+
+    # return only invoices
+    pred_data = gnucash.gnucash_core.QueryInt32Predicate(QOF_COMPARE_EQUAL,
+        GNC_INVOICE_CUST_INVOICE)
+    query.add_term([INVOICE_TYPE], pred_data, QOF_QUERY_AND)
+
+    invoices = []
+
+    for result in query.run():
+        invoices.append(gnucash_simple.invoiceToDict(
+            gnucash.gnucash_business.Invoice(instance=result)))
+
+    query.destroy()
+
+    return invoices
+
+def get_bills(book, properties):
+
+    # define defaults and set to None
+    defaults = [
+        'customer',
+        'is_paid',
+        'is_active',
+        'date_opened_from',
+        'date_opened_to',
+        'date_due_to',
+        'date_due_from',
+        'date_posted_to',
+        'date_posted_from'
+    ]
+
+    for default in defaults:
+        if default not in properties.keys():
+            properties[default] = None
+
+    query = gnucash.Query()
+    query.search_for('gncInvoice')
+    query.set_book(book)
+
+    if properties['is_paid'] == 0:
+        query.add_boolean_match([INVOICE_IS_PAID], False, QOF_QUERY_AND)
+    elif properties['is_paid'] == 1:
+        query.add_boolean_match([INVOICE_IS_PAID], True, QOF_QUERY_AND)
+
+    # active = JOB_IS_ACTIVE
+    if properties['is_active'] == 0:
+        query.add_boolean_match(['active'], False, QOF_QUERY_AND)
+    elif properties['is_active'] == 1:
+        query.add_boolean_match(['active'], True, QOF_QUERY_AND)
+
+    QOF_PARAM_GUID = 'guid'
+    INVOICE_OWNER = 'owner'
+
+    if properties['customer'] is not None:
+        customer_guid = gnucash.gnucash_core.GUID() 
+        gnucash.gnucash_core.GUIDString(properties['customer'], customer_guid)
+        query.add_guid_match(
+            [INVOICE_OWNER, QOF_PARAM_GUID], customer_guid, QOF_QUERY_AND)
+
+    # These are identical to invoices...
+
+    if properties['date_due_from'] is not None:
+        try:
+            properties['date_due_from'] = datetime.datetime.strptime(properties['date_due_from'], "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDateDueFrom',
+                'The date due from to must be provided in the form YYYY-MM-DD',
+                {'field': 'date_due_from'})
+
+        pred_data = gnucash.gnucash_core.QueryDatePredicate(
+            QOF_COMPARE_GTE, 2, properties['date_due_from'].date())
+        query.add_term(['date_due'], pred_data, QOF_QUERY_AND)
+
+    if properties['date_due_to'] is not None:
+        try:
+            properties['date_due_to'] = datetime.datetime.strptime(properties['date_due_to'], "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDateDueTo',
+                'The date due from to must be provided in the form YYYY-MM-DD',
+                {'field': 'date_due_to'})
+
+        pred_data = gnucash.gnucash_core.QueryDatePredicate(
+            QOF_COMPARE_LTE, 2, properties['date_due_to'].date())
+        query.add_term(['date_due'], pred_data, QOF_QUERY_AND)
+
+    if properties['date_opened_from'] is not None:
+        try:
+            properties['date_opened_from'] = datetime.datetime.strptime(properties['date_opened_from'], "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDateOpenedFrom',
+                'The date due from to must be provided in the form YYYY-MM-DD',
+                {'field': 'date_opened_from'})
+
+        pred_data = gnucash.gnucash_core.QueryDatePredicate(
+            QOF_COMPARE_GTE, 2, properties['date_opened_from'].date())
+        query.add_term(['date_opened'], pred_data, QOF_QUERY_AND)
+
+    if properties['date_opened_to'] is not None:
+        try:
+            properties['date_opened_to'] = datetime.datetime.strptime(properties['date_opened_to'], "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDateOpenedTo',
+                'The date due from to must be provided in the form YYYY-MM-DD',
+                {'field': 'date_opened_to'})
+
+        pred_data = gnucash.gnucash_core.QueryDatePredicate(
+            QOF_COMPARE_LTE, 2, properties['date_opened_to'].date())
+        query.add_term(['date_opened'], pred_data, QOF_QUERY_AND)
+
+    if properties['date_posted_from'] is not None:
+        try:
+            properties['date_posted_from'] = datetime.datetime.strptime(properties['date_posted_from'], "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDatePostedFrom',
+                'The date due from to must be provided in the form YYYY-MM-DD',
+                {'field': 'date_posted_from'})
+
+        pred_data = gnucash.gnucash_core.QueryDatePredicate(
+            QOF_COMPARE_GTE, 2, properties['date_posted_from'].date())
+        query.add_term(['date_posted'], pred_data, QOF_QUERY_AND)
+
+    if properties['date_posted_to'] is not None:
+        try:
+            properties['date_posted_to'] = datetime.datetime.strptime(properties['date_posted_to'], "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDatePostedTo',
+                'The date due from to must be provided in the form YYYY-MM-DD',
+                {'field': 'date_posted_to'})
+
+        pred_data = gnucash.gnucash_core.QueryDatePredicate(
+            QOF_COMPARE_LTE, 2, properties['date_posted_to'].date())
+        query.add_term(['date_posted'], pred_data, QOF_QUERY_AND)
+
+    # return only bills (2 = bills)
+    pred_data = gnucash.gnucash_core.QueryInt32Predicate(QOF_COMPARE_EQUAL, 2)
+    query.add_term([INVOICE_TYPE], pred_data, QOF_QUERY_AND)
+
+    bills = []
+
+    for result in query.run():
+        bills.append(gnucash_simple.billToDict(
+            gnucash.gnucash_business.Bill(instance=result)))
+
+    query.destroy()
+
+    return bills
+
+def get_gnucash_invoice(book, id):
+
+    # we don't use book.InvoicelLookupByID(id) as this is identical to
+    # book.BillLookupByID(id) so can return the same object if they share IDs
+
+    query = gnucash.Query()
+    query.search_for('gncInvoice')
+    query.set_book(book)
+
+    # return only invoices
+    pred_data = gnucash.gnucash_core.QueryInt32Predicate(QOF_COMPARE_EQUAL,
+        GNC_INVOICE_CUST_INVOICE)
+    query.add_term([INVOICE_TYPE], pred_data, QOF_QUERY_AND)
+
+    INVOICE_ID = 'id'
+
+    pred_data = gnucash.gnucash_core.QueryStringPredicate(
+        QOF_COMPARE_EQUAL, id, QOF_STRING_MATCH_NORMAL, False)
+    query.add_term([INVOICE_ID], pred_data, QOF_QUERY_AND)
+
+    invoice = None
+
+    for result in query.run():
+        invoice = gnucash.gnucash_business.Invoice(instance=result)
+
+    query.destroy()
+
+    return invoice
+
+def get_gnucash_bill(book ,id):
+
+    # we don't use book.InvoicelLookupByID(id) as this is identical to
+    # book.BillLookupByID(id) so can return the same object if they share IDs
+
+    query = gnucash.Query()
+    query.search_for('gncInvoice')
+    query.set_book(book)
+
+    # return only bills (2 = bills)
+    pred_data = gnucash.gnucash_core.QueryInt32Predicate(QOF_COMPARE_EQUAL, 2)
+    query.add_term([INVOICE_TYPE], pred_data, QOF_QUERY_AND)
+
+    INVOICE_ID = 'id'
+
+    pred_data = gnucash.gnucash_core.QueryStringPredicate(
+        QOF_COMPARE_EQUAL, id, QOF_STRING_MATCH_NORMAL, False)
+    query.add_term([INVOICE_ID], pred_data, QOF_QUERY_AND)
+
+    bill = None
+
+    for result in query.run():
+        bill = gnucash.gnucash_business.Bill(instance=result)
+
+    query.destroy()
+
+    return bill
+
+def get_invoice(book, id):
+
+    return gnucash_simple.invoiceToDict(get_gnucash_invoice(book, id))
+
+def pay_invoice(book, id, transaction_guid, posted_account_guid, transfer_account_guid,
+    payment_date, memo, num, auto_pay):
+
+    # Where is posted_account_guid used - it's in the dialog, but we're not using it
+
+    invoice = get_gnucash_invoice(book, id)
+
+    if invoice is None:
+        raise Error('NoInvoice', 'An invoice with this ID does not exist',
+            {'field': 'id'})
+
+    if transaction_guid == '':
+        transaction = None
+    else:
+        guid = gnucash.gnucash_core.GUID() 
+        gnucash.gnucash_core.GUIDString(transaction_guid, guid)
+
+        transaction = guid.TransLookup(book)
+
+        if transaction is None:
+            raise Error('NoTransaction', 'No transaction exists with this GUID',
+            {'field': 'transaction_guid'})
+
+    try:
+        payment_date = datetime.datetime.strptime(payment_date, "%Y-%m-%d")
+    except ValueError:
+        raise Error('InvalidPaymentDate',
+            'The payment date must be provided in the form YYYY-MM-DD',
+            {'field': 'payment_date'})
+    
+    account_guid = gnucash.gnucash_core.GUID() 
+    gnucash.gnucash_core.GUIDString(transfer_account_guid, account_guid)
+
+    transfer_account = account_guid.AccountLookup(book)
+
+    if transfer_account is None:
+        raise Error('NoTransferAccount', 'No account exists with this GUID',
+            {'field': 'transfer_account_guid'})
+
+    invoice.ApplyPayment(transaction, transfer_account, invoice.GetTotal(), GncNumeric(0),
+        payment_date, memo, num)
+
+    return gnucash_simple.invoiceToDict(invoice)    
+
+def pay_bill(book, id, posted_account_guid, transfer_account_guid, payment_date,
+    memo, num, auto_pay):
+
+    # The posted_account_guid is not actually used in bill.ApplyPayment - why is it on the payment screen?
+
+    bill = get_gnucash_bill(book, id)
+
+    if bill is None:
+        raise Error('NoBill', 'A bill with this ID does not exist',
+            {'field': 'id'})
+
+    try:
+        payment_date = datetime.datetime.strptime(payment_date, "%Y-%m-%d")
+    except ValueError:
+        raise Error('InvalidPaymentDate',
+            'The payment date must be provided in the form YYYY-MM-DD',
+            {'field': 'payment_date'})
+
+    account_guid = gnucash.gnucash_core.GUID() 
+    gnucash.gnucash_core.GUIDString(transfer_account_guid, account_guid)
+
+    transfer_account = account_guid.AccountLookup(book)
+
+    if transfer_account is None:
+        raise Error('NoTransferAccount', 'No account exists with this GUID',
+            {'field': 'transfer_account_guid'})
+
+    # We pay the negitive total as the bill as this seemed to cause issues
+    # with the split not being set correctly and not being marked as paid
+    bill.ApplyPayment(None, transfer_account, bill.GetTotal().neg(), GncNumeric(0),
+        payment_date, memo, num)
+
+    return gnucash_simple.billToDict(bill)
+
+def get_bill(book, id):
+
+    return gnucash_simple.billToDict(get_gnucash_bill(book, id))
+
+def add_vendor(book, id, currency_mnumonic, name, contact, address_line_1,
+    address_line_2, address_line_3, address_line_4, phone, fax, email):
+
+    if name == '':
+        raise Error('NoVendorName', 'A name must be entered for this company',
+            {'field': 'name'})
+
+    if (address_line_1 == ''
+        and address_line_2 == ''
+        and address_line_3 == ''
+        and address_line_4 == ''):
+        raise Error('NoVendorAddress',
+            'An address must be entered for this company',
+            {'field': 'address'})
+
+    commod_table = book.get_table()
+    currency = commod_table.lookup('CURRENCY', currency_mnumonic)
+
+    if currency is None:
+        raise Error('InvalidVendorCurrency',
+            'A valid currency must be supplied for this vendor',
+            {'field': 'currency'})
+
+    if id is None:
+        id = book.VendorNextID()
+
+    vendor = Vendor(book, id, currency, name)
+
+    address = vendor.GetAddr()
+    address.SetName(contact)
+    address.SetAddr1(address_line_1)
+    address.SetAddr2(address_line_2)
+    address.SetAddr3(address_line_3)
+    address.SetAddr4(address_line_4)
+    address.SetPhone(phone)
+    address.SetFax(fax)
+    address.SetEmail(email)
+
+    return gnucash_simple.vendorToDict(vendor)
+
+def add_customer(book, id, currency_mnumonic, name, contact, address_line_1,
+    address_line_2, address_line_3, address_line_4, phone, fax, email):
+
+    if name == '':
+        raise Error('NoCustomerName',
+            'A name must be entered for this company', {'field': 'name'})
+
+    if (address_line_1 == ''
+        and address_line_2 == ''
+        and address_line_3 == ''
+        and address_line_4 == ''):
+        raise Error('NoCustomerAddress',
+            'An address must be entered for this company',
+            {'field': 'address'})
+
+    commod_table = book.get_table()
+    currency = commod_table.lookup('CURRENCY', currency_mnumonic)
+
+    if currency is None:
+        raise Error('InvalidCustomerCurrency',
+            'A valid currency must be supplied for this customer',
+            {'field': 'currency'})
+
+    if id is None:
+        id = book.CustomerNextID()
+
+    customer = Customer(book, id, currency, name)
+
+    address = customer.GetAddr()
+    address.SetName(contact)
+    address.SetAddr1(address_line_1)
+    address.SetAddr2(address_line_2)
+    address.SetAddr3(address_line_3)
+    address.SetAddr4(address_line_4)
+    address.SetPhone(phone)
+    address.SetFax(fax)
+    address.SetEmail(email)
+
+    return gnucash_simple.customerToDict(customer)
+
+def update_customer(book, id, name, contact, address_line_1, address_line_2,
+    address_line_3, address_line_4, phone, fax, email):
+
+    customer = book.CustomerLookupByID(id)
+
+    if customer is None:
+        raise Error('NoCustomer', 'A customer with this ID does not exist',
+            {'field': 'id'})
+
+    if name == '':
+        raise Error('NoCustomerName',
+            'A name must be entered for this company', {'field': 'name'})
+
+    if (address_line_1 == ''
+        and address_line_2 == ''
+        and address_line_3 == ''
+        and address_line_4 == ''):
+        raise Error('NoCustomerAddress',
+            'An address must be entered for this company',
+            {'field': 'address'})
+
+    customer.SetName(name)
+
+    address = customer.GetAddr()
+    address.SetName(contact)
+    address.SetAddr1(address_line_1)
+    address.SetAddr2(address_line_2)
+    address.SetAddr3(address_line_3)
+    address.SetAddr4(address_line_4)
+    address.SetPhone(phone)
+    address.SetFax(fax)
+    address.SetEmail(email)
+
+    return gnucash_simple.customerToDict(customer)
+
+def add_invoice(book, id, customer_id, currency_mnumonic, date_opened, notes):
+
+    # Check customer ID is provided to avoid "CRIT <qof> qof_query_string_predicate: assertion '*str != '\0'' failed" error
+    if customer_id == '':
+        raise Error('NoCustomer',
+            'A customer ID must be provided', {'field': 'id'})
+
+    customer = book.CustomerLookupByID(customer_id)
+
+    if customer is None:
+        raise Error('NoCustomer',
+            'A customer with this ID does not exist', {'field': 'id'})
+
+    if id is None:
+        id = book.InvoiceNextID(customer)
+
+    try:
+        date_opened = datetime.datetime.strptime(date_opened, "%Y-%m-%d")
+    except ValueError:
+        raise Error('InvalidDateOpened',
+            'The date opened must be provided in the form YYYY-MM-DD',
+            {'field': 'date_opened'})
+
+    if currency_mnumonic is None:
+        currency_mnumonic = customer.GetCurrency().get_mnemonic()
+
+    commod_table = book.get_table()
+    currency = commod_table.lookup('CURRENCY', currency_mnumonic)
+
+    if currency is None:
+        raise Error('InvalidInvoiceCurrency',
+            'A valid currency must be supplied for this invoice',
+            {'field': 'currency'})
+    elif currency.get_mnemonic() != customer.GetCurrency().get_mnemonic():
+        # Does Gnucash actually enforce this?
+        raise Error('MismatchedInvoiceCurrency',
+            'The currency of this invoice does not match the customer',
+            {'field': 'currency'})
+
+    invoice = Invoice(book, id, currency, customer, date_opened.date())
+
+    invoice.SetNotes(notes)
+
+    return gnucash_simple.invoiceToDict(invoice)
+
+def update_invoice(book, id, customer_id, currency_mnumonic, date_opened,
+    notes, posted, posted_account_guid, posted_date, due_date, posted_memo,
+    posted_accumulatesplits, posted_autopay):
+
+    invoice = get_gnucash_invoice(book, id)
+
+    if invoice is None:
+        raise Error('NoInvoice',
+            'An invoice with this ID does not exist',
+            {'field': 'id'})
+
+    customer = book.CustomerLookupByID(customer_id)
+
+    if customer is None:
+        raise Error('NoCustomer', 'A customer with this ID does not exist',
+            {'field': 'customer_id'})
+
+    try:
+        date_opened = datetime.datetime.strptime(date_opened, "%Y-%m-%d")
+    except ValueError:
+        raise Error('InvalidDateOpened',
+            'The date opened must be provided in the form YYYY-MM-DD',
+            {'field': 'date_opened'})
+
+    if posted_date == '':
+        if posted == 1:
+            raise Error('NoDatePosted',
+                'The date posted must be supplied when posted=1',
+                {'field': 'date_posted'})
+    else:
+        try:
+            posted_date = datetime.datetime.strptime(posted_date, "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDatePosted',
+                'The date posted must be provided in the form YYYY-MM-DD',
+                {'field': 'posted_date'})
+
+    if due_date == '':
+        if posted == 1:
+            raise Error('NoDateDue',
+                'The due date must be supplied when posted=1',
+                {'field': 'due_date'})
+    else:
+        try:
+            due_date = datetime.datetime.strptime(due_date, "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDateDue',
+                'The due date must be provided in the form YYYY-MM-DD',
+                {'field': 'due_date'})
+
+    if posted_account_guid == '':
+        if posted == 1:
+            raise Error('NoPostedAccountGuid',
+                'The posted account GUID must be supplied when posted=1',
+                {'field': 'posted_account_guid'})
+    else:
+        guid = gnucash.gnucash_core.GUID() 
+        gnucash.gnucash_core.GUIDString(posted_account_guid, guid)
+
+        posted_account = guid.AccountLookup(book)
+
+        if posted_account is None:
+            raise Error('NoAccount',
+                'No account exists with the posted account GUID',
+                {'field': 'posted_account_guid'})
+
+    invoice.SetOwner(customer)
+    invoice.SetDateOpened(date_opened)
+    invoice.SetNotes(notes)
+
+    # post if currently unposted and posted=1
+    if (invoice.GetDatePosted() is None and posted == 1):
+        invoice.PostToAccount(posted_account, posted_date, due_date,
+            posted_memo, posted_accumulatesplits, posted_autopay)
+
+    return gnucash_simple.invoiceToDict(invoice)
+
+def update_bill(book, id, vendor_id, currency_mnumonic, date_opened, notes,
+    posted, posted_account_guid, posted_date, due_date, posted_memo,
+    posted_accumulatesplits, posted_autopay):
+
+    bill = get_gnucash_bill(book, id)
+
+    if bill is None:
+        raise Error('NoBill', 'A bill with this ID does not exist',
+            {'field': 'id'})
+
+    vendor = book.VendorLookupByID(vendor_id)
+
+    if vendor is None:
+        raise Error('NoVendor',
+            'A vendor with this ID does not exist',
+            {'field': 'vendor_id'})
+
+    try:
+        date_opened = datetime.datetime.strptime(date_opened, "%Y-%m-%d")
+    except ValueError:
+        raise Error('InvalidDateOpened',
+            'The date opened must be provided in the form YYYY-MM-DD',
+            {'field': 'date_opened'})
+
+    if posted_date == '':
+        if posted == 1:
+            raise Error('NoDatePosted',
+                'The date posted must be supplied when posted=1',
+                {'field': 'date_posted'})
+    else:
+        try:
+            posted_date = datetime.datetime.strptime(posted_date, "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDatePosted',
+                'The date posted must be provided in the form YYYY-MM-DD',
+                {'field': 'posted_date'})
+
+    if due_date == '':
+        if posted == 1:
+            raise Error('NoDateDue',
+                'The due date must be supplied when posted=1',
+                {'field': 'date_sue'})
+    else:
+        try:
+            due_date = datetime.datetime.strptime(due_date, "%Y-%m-%d")
+        except ValueError:
+            raise Error('InvalidDateDue',
+                'The due date must be provided in the form YYYY-MM-DD',
+                {'field': 'due_date'})
+
+    if posted_account_guid == '':
+        if posted == 1:
+            raise Error('NoPostedAccountGuid',
+                'The posted account GUID must be supplied when posted=1',
+                {'field': 'posted_account_guid'})
+    else:
+        guid = gnucash.gnucash_core.GUID() 
+        gnucash.gnucash_core.GUIDString(posted_account_guid, guid)
+
+        posted_account = guid.AccountLookup(book)
+
+        if posted_account is None:
+            raise Error('NoAccount',
+                'No account exists with the posted account GUID',
+                {'field': 'posted_account_guid'})
+
+    bill.SetOwner(vendor)
+    bill.SetDateOpened(date_opened)
+    bill.SetNotes(notes)
+
+    # post if currently unposted and posted=1
+    if bill.GetDatePosted() is None and posted == 1:
+        bill.PostToAccount(posted_account, posted_date, due_date, posted_memo,
+            posted_accumulatesplits, posted_autopay)
+
+    return gnucash_simple.billToDict(bill)
+
+def add_entry(book, invoice_id, date, description, account_guid, quantity,
+    price, discount_type, discount):
+
+    invoice = get_gnucash_invoice(book, invoice_id)
+
+    if invoice is None:
+        raise Error('NoInvoice',
+            'No invoice exists with this ID', {'field': 'invoice_id'})
+
+    try:
+        date = datetime.datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise Error('InvalidDateOpened',
+            'The date opened must be provided in the form YYYY-MM-DD',
+            {'field': 'date'})
+
+    # Only value based discounts are supported
+    if discount_type != GNC_AMT_TYPE_VALUE:
+        raise Error('UnsupportedDiscountType', 'Only value based discounts are currently supported',
+            {'field': 'discount_type'})
+
+    guid = gnucash.gnucash_core.GUID() 
+    gnucash.gnucash_core.GUIDString(account_guid, guid)
+
+    account = guid.AccountLookup(book)
+
+    if account is None:
+        raise Error('NoAccount', 'No account exists with this GUID',
+            {'field': 'account_guid'})
+
+    try:
+        quantity = Decimal(quantity).quantize(Decimal('.01'))
+    except ArithmeticError:
+        raise Error('InvalidQuantity', 'This quantity is not valid',
+            {'field': 'quantity'})
+
+    try:
+        price = Decimal(price).quantize(Decimal('.01'))
+    except ArithmeticError:
+        raise Error('InvalidPrice', 'This price is not valid',
+            {'field': 'price'})
+
+    # Currently only value based discounts are supported
+    try:
+        discount = Decimal(discount).quantize(Decimal('.01'))
+    except ArithmeticError:
+        raise Error('InvalidDiscount', 'This discount is not valid',
+            {'field': 'discount'})
+
+    entry = Entry(book, invoice, date.date())
+    entry.SetDateEntered(datetime.datetime.now())
+    entry.SetDescription(description)
+    entry.SetInvAccount(account)
+    entry.SetQuantity(gnc_numeric_from_decimal(quantity))
+    entry.SetInvPrice(gnc_numeric_from_decimal(price))
+    # Do we need to set this?
+    # entry.SetInvDiscountHow()
+    entry.SetInvDiscountType(discount_type)
+    # Currently only value based discounts are supported
+    entry.SetInvDiscount(gnc_numeric_from_decimal(discount))
+
+    return gnucash_simple.entryToDict(entry)
+
+def add_bill_entry(book, bill_id, date, description, account_guid, quantity, 
+    price):
+
+    bill = get_gnucash_bill(book,bill_id)
+
+    if bill is None:
+        raise Error('NoBill', 'No bill exists with this ID',
+            {'field': 'bill_id'})
+
+    try:
+        date = datetime.datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise Error('InvalidDateOpened',
+            'The date opened must be provided in the form YYYY-MM-DD',
+            {'field': 'date'})
+
+    guid = gnucash.gnucash_core.GUID() 
+    gnucash.gnucash_core.GUIDString(account_guid, guid)
+
+    account = guid.AccountLookup(book)
+
+    if account is None:
+        raise Error('NoAccount', 'No account exists with this GUID',
+            {'field': 'account_guid'})
+
+    try:
+        quantity = Decimal(quantity).quantize(Decimal('.01'))
+    except ArithmeticError:
+        raise Error('InvalidQuantity', 'This quantity is not valid',
+            {'field': 'quantity'})
+
+    try:
+        price = Decimal(price).quantize(Decimal('.01'))
+    except ArithmeticError:
+        raise Error('InvalidPrice', 'This price is not valid',
+            {'field': 'price'})
+    
+    entry = Entry(book, bill, date.date())
+    entry.SetDateEntered(datetime.datetime.now())
+    entry.SetDescription(description)
+    entry.SetBillAccount(account)
+    entry.SetQuantity(gnc_numeric_from_decimal(quantity))
+    entry.SetBillPrice(gnc_numeric_from_decimal(price))
+    
+    return gnucash_simple.entryToDict(entry)
+
+def get_entry(book, entry_guid):
+
+    guid = gnucash.gnucash_core.GUID() 
+    gnucash.gnucash_core.GUIDString(entry_guid, guid)
+
+    entry = book.EntryLookup(guid)
+
+    if entry is None:
+        return None
+    else:
+        return gnucash_simple.entryToDict(entry)
+
+def update_entry(book, entry_guid, date, description, account_guid, quantity,
+    price, discount_type, discount):
+
+    guid = gnucash.gnucash_core.GUID() 
+    gnucash.gnucash_core.GUIDString(entry_guid, guid)
+
+    entry = book.EntryLookup(guid)
+
+    if entry is None:
+        raise Error('NoEntry', 'No entry exists with this GUID',
+            {'field': 'entry_guid'})
+
+    try:
+        date = datetime.datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise Error('InvalidDateOpened',
+            'The date opened must be provided in the form YYYY-MM-DD',
+            {'field': 'date'})
+
+    # Only check discount type for invoices
+    if entry.GetInvAccount() is not None:
+        # Only value based discounts are supported
+        if discount_type != GNC_AMT_TYPE_VALUE:
+            raise Error('UnsupportedDiscountType', 'Only value based discounts are currently supported',
+                {'field': 'discount_type'})
+ 
+    gnucash.gnucash_core.GUIDString(account_guid, guid)
+
+    account = guid.AccountLookup(book)
+
+    if account is None:
+        raise Error('NoAccount', 'No account exists with this GUID',
+            {'field': 'account_guid'})
+
+    try:
+        quantity = Decimal(quantity).quantize(Decimal('.01'))
+    except ArithmeticError:
+        raise Error('InvalidQuantity', 'This quantity is not valid',
+            {'field': 'quantity'})
+
+    try:
+        price = Decimal(price).quantize(Decimal('.01'))
+    except ArithmeticError:
+        raise Error('InvalidPrice', 'This price is not valid',
+            {'field': 'price'})
+
+    # Only discount for invoices
+    if entry.GetInvAccount() is not None:
+        # Currently only value based discounts are supported
+
+        # As bills may pass the discount though as None check this and raise an error for invoices
+        if discount is None:
+            raise Error('InvalidDiscount', 'This discount is not valid',
+                {'field': 'discount'})
+
+        try:
+            discount = Decimal(discount).quantize(Decimal('.01'))
+        except ArithmeticError:
+            raise Error('InvalidDiscount', 'This discount is not valid',
+                {'field': 'discount'})
+
+    entry.SetDate(date.date())
+
+    entry.SetDateEntered(datetime.datetime.now())
+    entry.SetDescription(description)
+    entry.SetQuantity(gnc_numeric_from_decimal(quantity))
+
+    if entry.GetInvAccount() is not None:
+        entry.SetInvAccount(account)
+        entry.SetInvPrice(gnc_numeric_from_decimal(price))
+    else:
+        entry.SetBillAccount(account)
+        entry.SetBillPrice(gnc_numeric_from_decimal(price))
+
+    # Only set discount for invoices
+    if entry.GetInvAccount() is not None:
+        # Do we need to set this?
+        # entry.SetInvDiscountHow()
+
+        entry.SetInvDiscountType(discount_type)
+        # Currently only value based discounts are supported
+        entry.SetInvDiscount(gnc_numeric_from_decimal(discount))
+
+    return gnucash_simple.entryToDict(entry)
+
+def delete_entry(book, entry_guid):
+
+    guid = gnucash.gnucash_core.GUID() 
+    gnucash.gnucash_core.GUIDString(entry_guid, guid)
+
+    entry = book.EntryLookup(guid)
+
+    invoice = entry.GetInvoice()
+    bill = entry.GetBill()
+
+    if invoice is not None and entry is not None:
+        invoice.RemoveEntry(entry)
+    elif bill is not None and entry is not None:
+        bill.RemoveEntry(entry)
+
+    if entry is not None:
+        entry.Destroy()
+
+def delete_transaction(book, transaction_guid):
+
+    guid = gnucash.gnucash_core.GUID() 
+    gnucash.gnucash_core.GUIDString(transaction_guid, guid)
+
+    transaction = guid.TransLookup(book)
+
+    # Might be nicer to raise a 404?
+    if transaction is None:
+        raise Error('NoTransaction', 'A transaction with this GUID does not exist',
+            {'field': 'id'})
+
+    transaction.Destroy()
+
+def add_bill(book, id, vendor_id, currency_mnumonic, date_opened, notes):
+
+    vendor = book.VendorLookupByID(vendor_id)
+
+    if vendor is None:
+        raise Error('NoVendor', 'A vendor with this ID does not exist',
+            {'field': 'id'})
+
+    if id is None:
+        id = book.BillNextID(vendor)
+
+    try:
+        date_opened = datetime.datetime.strptime(date_opened, "%Y-%m-%d")
+    except ValueError:
+        raise Error('InvalidDateOpened',
+            'The date opened must be provided in the form YYYY-MM-DD',
+            {'field': 'date_opened'})
+
+    if currency_mnumonic is None:
+        currency_mnumonic = vendor.GetCurrency().get_mnemonic()
+
+    commod_table = book.get_table()
+    currency = commod_table.lookup('CURRENCY', currency_mnumonic)
+
+    if currency is None:
+        raise Error('InvalidBillCurrency',
+            'A valid currency must be supplied for this bill',
+            {'field': 'currency'})
+    elif currency.get_mnemonic() != vendor.GetCurrency().get_mnemonic():
+        # Does Gnucash actually enforce this?
+        raise Error('MismatchedBillCurrency',
+            'The currency of this bill does not match the vendor',
+            {'field': 'currency'})
+
+    bill = Bill(book, id, currency, vendor, date_opened.date())
+
+    bill.SetNotes(notes)
+
+    return gnucash_simple.billToDict(bill)
+
+def add_account(book, name, currency_mnumonic, account_type_id, parent_account_guid):
+
+    from gnucash.gnucash_core_c import \
+    ACCT_TYPE_BANK, ACCT_TYPE_CASH, ACCT_TYPE_CREDIT, ACCT_TYPE_ASSET, \
+    ACCT_TYPE_LIABILITY , ACCT_TYPE_STOCK , ACCT_TYPE_MUTUAL, \
+    ACCT_TYPE_INCOME, ACCT_TYPE_EXPENSE, ACCT_TYPE_EQUITY, \
+    ACCT_TYPE_RECEIVABLE, ACCT_TYPE_PAYABLE, ACCT_TYPE_TRADING 
+
+    if name == '':
+        raise Error('NoAccountName', 'A name must be entered for this account',
+            {'field': 'name'})
+
+    commod_table = book.get_table()
+    currency = commod_table.lookup('CURRENCY', currency_mnumonic)
+
+    if currency is None:
+        raise Error('InvalidAccountCurrency',
+            'A valid currency must be supplied for this account',
+            {'field': 'currency'})
+
+    if account_type_id not in [ACCT_TYPE_BANK, ACCT_TYPE_CASH, ACCT_TYPE_CREDIT, \
+    ACCT_TYPE_ASSET, ACCT_TYPE_LIABILITY , ACCT_TYPE_STOCK , ACCT_TYPE_MUTUAL, \
+    ACCT_TYPE_INCOME, ACCT_TYPE_EXPENSE, ACCT_TYPE_EQUITY, ACCT_TYPE_RECEIVABLE, \
+    ACCT_TYPE_PAYABLE, ACCT_TYPE_TRADING]:
+        raise Error('InvalidAccountTypeID',
+            'A valid account type ID must be supplied for this account',
+            {'field': 'account_type_id'})
+
+    if parent_account_guid == '':
+        parent_account = book.get_root_account()
+    else:
+        account_guid = gnucash.gnucash_core.GUID() 
+        gnucash.gnucash_core.GUIDString(parent_account_guid, account_guid)
+
+        parent_account = account_guid.AccountLookup(book)
+
+    if parent_account is None:
+        raise Error('InvalidParentAccount',
+            'A valid account parent account must be supplied for this account',
+            {'field': 'parent_account_guid'})
+
+    account = Account(book)
+    parent_account.append_child(account)
+    account.SetName(name)
+    account.SetType(account_type_id)
+    account.SetCommodity(currency)
+
+    return gnucash_simple.accountToDict(account)
+
+def add_transaction(book, num, description, date_posted, currency_mnumonic, splits):
+
+    transaction = Transaction(book)
+
+    transaction.BeginEdit()
+
+    commod_table = book.get_table()
+    currency = commod_table.lookup('CURRENCY', currency_mnumonic)
+
+    if currency is None:
+        raise Error('InvalidTransactionCurrency',
+            'A valid currency must be supplied for this transaction',
+            {'field': 'currency'})
+
+    try:
+        date_posted = datetime.datetime.strptime(date_posted, "%Y-%m-%d")
+    except ValueError:
+        raise Error('InvalidDatePosted',
+            'The date posted must be provided in the form YYYY-MM-DD',
+            {'field': 'date_posted'})
+
+    if len(splits) is 0:
+        raise Error('NoSplits',
+            'At least one split must be provided',
+            {'field': 'splits'})
+
+    for split_values in splits:
+        account_guid = gnucash.gnucash_core.GUID() 
+        gnucash.gnucash_core.GUIDString(split_values['account_guid'], account_guid)
+
+        account = account_guid.AccountLookup(book)
+
+        if account is None:
+            raise Error('InvalidSplitAccount',
+                'A valid account must be supplied for this split',
+                {'field': 'account'})
+
+        if account.GetCommodity().get_mnemonic() != currency_mnumonic:
+            raise Error('InvalidSplitAccountCurrency',
+                'The transaction currency must match the account currency for this split',
+                {'field': 'account'})
+
+        # TODO - the API should probably allow numerator and denomiator rather than assue 100 - it would also avoid the issue of rounding errrors with float/int conversion
+        value = split_values['value']
+
+        try: 
+            value = float(value)
+            value = value * 100
+            value = round(value)
+        except ValueError:
+            raise Error('InvalidSplitValue',
+            'A valid value must be supplied for this split',
+            {'field': 'value'})
+        except TypeError:
+            raise Error('InvalidSplitValue',
+            'A valid value must be supplied for this split',
+            {'field': 'value'})
+
+        split = Split(book)
+        split.SetValue(GncNumeric(value, 100))
+        split.SetAccount(account)
+        split.SetParent(transaction)
+
+    # TODO - check that splits match...
+
+    transaction.SetCurrency(currency)
+    transaction.SetDescription(description)
+    transaction.SetNum(num)
+
+    # This function changes at some point between Gnucash/Python 2/3
+    if sys.version_info >= (3,0):
+        transaction.SetDatePostedSecs(date_posted)
+    else:
+        transaction.SetDatePostedTS(date_posted)
+
+    transaction.CommitEdit()
+
+    return gnucash_simple.transactionToDict(transaction, ['splits'])
+
+def get_transaction(book, transaction_guid):
+
+    guid = gnucash.gnucash_core.GUID() 
+    gnucash.gnucash_core.GUIDString(transaction_guid, guid)
+
+    transaction = guid.TransLookup(book)
+
+    if transaction is None:
+        return None
+    else:
+        return gnucash_simple.transactionToDict(transaction, ['splits'])
+
+def edit_transaction(book, transaction_guid, num, description, date_posted,
+    currency_mnumonic, splits):
+
+    guid = gnucash.gnucash_core.GUID() 
+    gnucash.gnucash_core.GUIDString(transaction_guid, guid)
+
+    transaction = guid.TransLookup(book)
+
+    if transaction is None:
+        raise Error('InvalidTransactionGuid',
+            'A transaction with this GUID does not exist',
+            {'field': 'guid'})
+
+    transaction.BeginEdit()
+
+    commod_table = book.get_table()
+    currency = commod_table.lookup('CURRENCY', currency_mnumonic)
+
+    if currency is None:
+        raise Error('InvalidTransactionCurrency',
+            'A valid currency must be supplied for this transaction',
+            {'field': 'currency'})
+
+    try:
+        date_posted = datetime.datetime.strptime(date_posted, "%Y-%m-%d")
+    except ValueError:
+        raise Error('InvalidDatePosted',
+            'The date posted must be provided in the form YYYY-MM-DD',
+            {'field': 'date_posted'})
+
+    if len(splits) is 0:
+        raise Error('NoSplits',
+            'At least one split must be provided',
+            {'field': 'splits'})
+
+    split_guids = []
+
+    # Should we do all checks before calling split_guid.SplitLookup(book) as it's not clear when these will be comitted?
+    for split_values in splits:
+
+        split_guids.append(split_values['guid']);
+
+        split_guid = gnucash.gnucash_core.GUID() 
+        gnucash.gnucash_core.GUIDString(split_values['guid'], split_guid)
+
+        split = split_guid.SplitLookup(book)
+
+        if split is None:
+            raise Error('InvalidSplitGuid',
+                'A valid guid must be supplied for this split',
+                {'field': 'guid'})
+
+        account_guid = gnucash.gnucash_core.GUID() 
+        gnucash.gnucash_core.GUIDString(
+            split_values['account_guid'], account_guid)
+
+        account = account_guid.AccountLookup(book)
+
+        if account is None:
+            raise Error('InvalidSplitAccount',
+                'A valid account must be supplied for this split',
+                {'field': 'account'})
+
+        if account.GetCommodity().get_mnemonic() != currency_mnumonic:
+            raise Error('InvalidSplitAccountCurrency',
+                'The transaction currency must match the account currency for this split',
+                {'field': 'account'})
+
+        # TODO - the API should probably allow numerator and denomiator rather than assue 100
+        value = split_values['value']
+
+        try: 
+            value = float(value)
+            value = value * 100
+            value = int(value)
+        except ValueError:
+            raise Error('InvalidSplitValue',
+            'A valid value must be supplied for this split',
+            {'field': 'value'})
+        except TypeError:
+            raise Error('InvalidSplitValue',
+            'A valid value must be supplied for this split',
+            {'field': 'value'})
+
+        split.SetValue(GncNumeric(value, 100))
+        split.SetAccount(account)
+        split.SetParent(transaction)
+
+    if len(split_guids) != len(set(split_guids)):
+        raise Error('DuplicateSplitGuid',
+            'One of the splits provided shares a GUID with another split',
+            {'field': 'guid'})
+
+    transaction.SetCurrency(currency)
+    transaction.SetDescription(description)
+    transaction.SetNum(num)
+
+    # This function changes at some point between Guncash/Python 2/3
+    if sys.version_info >= (3,0):
+        transaction.SetDatePostedSecs(date_posted)
+    else:
+        transaction.SetDatePostedTS(date_posted)
+
+    transaction.CommitEdit()
+
+    return gnucash_simple.transactionToDict(transaction, ['splits'])
 
 def start_session(connection_string, is_new, ignore_lock):
 
@@ -144,6 +1533,17 @@ def end_session():
     session.destroy()
 
     session = None
+
+def get_session():
+
+    global session
+
+    if session == None:
+        raise Error('SessionDoesNotExist',
+            'The session does not exist',
+            {})
+
+    return session
 
 def parse_gnucash_backend_exception(exception_string):
     # Argument is of the form "call to %s resulted in the following errors, %s" - extract the second string
@@ -223,7 +1623,38 @@ if __name__ == "__main__":
             print 'New book created'
 
         else:
-            print 'Command not found'  
+            print 'Command not found'
+    elif type == 'customer':
+
+        if command == 'new':
+
+            print arguments
+
+            id = ''
+            currency = 'GBP'
+            name = ''
+            contact = ''
+            address_line_1 = ''
+            address_line_2 = ''
+            address_line_3 = ''
+            address_line_4 = ''
+            phone = ''
+            fax = ''
+            email = ''
+
+
+            try:
+                session = start_session(connection_string, False, True)
+                customer = add_customer(session.book, id, currency, name, contact,
+                address_line_1, address_line_2, address_line_3, address_line_4,
+                phone, fax, email)
+                end_session()
+            except Error as error:
+                print error.message
+                sys.exit(2)
+
+            print 'New book created'
+
 
 
     else:
