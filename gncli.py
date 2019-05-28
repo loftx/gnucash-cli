@@ -1597,72 +1597,71 @@ class Error(Exception):
         self.message = message
         self.data = data
 
+def parse_new_book(args):
+
+    try:
+        start_session(args.connection_string, True, False)
+        end_session()
+    except Error as error:
+        print(error.message)
+        sys.exit(2)
+
+    print('New book created')
+
+
+def parse_add_customer(args):
+    
+    try:
+        session = start_session(args.connection_string, False, True)
+        customer = add_customer(session.book, args.id, args.currency, args.name, args.contact,
+        args.address_line_1, args.address_line_2, args.address_line_3, args.address_line_4,
+        args.phone, args.fax, args.email)
+        end_session()
+    except Error as error:
+        print(error.message)
+        sys.exit(2)
+
+    print('Customer ' + customer['id'] + ' created')
 
 if __name__ == "__main__":
-
-    #arguments = sys.argv[1:]
 
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", help="the command to run")
-    parser.add_argument("subcommand", help="the subcommand to run")
-    parser.add_argument("connection_string", help="the file or database to connect to")
+    # Left this first as was originally causing issues when later
+    parser.add_argument("connection_string", type=str, help="the file or database to connect to")
+
+    #python3 gncli.py mysql://root:s0meSort055sEcure@54.36.191.106/gnucash_test customer new
+    
+    command_parser = parser.add_subparsers(help='command help')
+
+    ####
+
+    customer_parser = command_parser.add_parser('customer')
+    customer_subparsers = customer_parser.add_subparsers()
+
+    customer_new_parser = customer_subparsers.add_parser('new')
+    customer_new_parser.add_argument("--id", type=str, help="an optional customer ID")
+    customer_new_parser.add_argument("--currency", type=str, help="the currency for the customer e.g. GBP")
+    customer_new_parser.add_argument("--name", type=str)
+    customer_new_parser.add_argument("--contact", type=str)
+    customer_new_parser.add_argument("--address_line_1", type=str)
+    customer_new_parser.add_argument("--address_line_2", type=str)
+    customer_new_parser.add_argument("--address_line_3", type=str)
+    customer_new_parser.add_argument("--address_line_4", type=str)
+    customer_new_parser.add_argument("--phone", type=str)
+    customer_new_parser.add_argument("--fax", type=str)
+    customer_new_parser.add_argument("--email", type=str)
+    customer_new_parser.set_defaults(func=parse_add_customer)
+
+    ####
+
+    book_parser = command_parser.add_parser('book')
+    book_subparsers = book_parser.add_subparsers()
+
+    book_new_parser = book_subparsers.add_parser('new')
+    book_new_parser.set_defaults(func=parse_new_book)
+
     args = parser.parse_args()
-
-    if args.command == 'book':
-        if args.subcommand == 'new':
-            
-            try:
-                start_session(connection_string, True, False)
-                end_session()
-            except Error as error:
-                print error.message
-                sys.exit(2)
-
-            print 'New book created'
-
-        else:
-            print 'Command not found'
-    elif args.command == 'customer':
-
-        if args.subcommand == 'new':
-
-            print arguments
-
-            id = ''
-            currency = 'GBP'
-            name = ''
-            contact = ''
-            address_line_1 = ''
-            address_line_2 = ''
-            address_line_3 = ''
-            address_line_4 = ''
-            phone = ''
-            fax = ''
-            email = ''
-
-
-            try:
-                session = start_session(connection_string, False, True)
-                customer = add_customer(session.book, id, currency, name, contact,
-                address_line_1, address_line_2, address_line_3, address_line_4,
-                phone, fax, email)
-                end_session()
-            except Error as error:
-                print error.message
-                sys.exit(2)
-
-            print 'New book created'
-
-
-
-    else:
-        print 'Type not found'
-
-
-#    try:
-#        options, arguments = getopt.getopt(sys.argv[1:], 'nh:', ['host=', 'new='])
-#    except getopt.GetoptError as err:
-#        print 'Usage: gncli.py <connection string>'
-#        sys.exit(2)
+    args.func(args)
+    exit();
