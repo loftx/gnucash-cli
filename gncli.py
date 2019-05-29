@@ -1597,7 +1597,7 @@ class Error(Exception):
         self.message = message
         self.data = data
 
-def parse_new_book(args):
+def parse_book_new(args):
 
     try:
         start_session(args.connection_string, True, False)
@@ -1609,7 +1609,20 @@ def parse_new_book(args):
     print('New book created')
 
 
-def parse_add_customer(args):
+def parse_customer_list(args):
+    
+    try:
+        session = start_session(args.connection_string, False, True)
+        customers = get_customers(session.book)
+        end_session()
+    except Error as error:
+        print(error.message)
+        sys.exit(2)
+
+    for customer in customers:
+        print(customer)
+
+def parse_customer_add(args):
     
     try:
         session = start_session(args.connection_string, False, True)
@@ -1623,6 +1636,31 @@ def parse_add_customer(args):
 
     print('Customer ' + customer['id'] + ' created')
 
+def parse_add_invoice(args):
+    
+    try:
+        session = start_session(args.connection_string, False, True)
+        invoice = add_invoice(session.book, args.id, args.customer_id, args.currency,
+                args.date_opened, args.notes)
+        end_session()
+    except Error as error:
+        print(error.message)
+        sys.exit(2)
+
+    print('Invoice ' + invoice['id'] + ' created')
+
+def parse_add_account(args):
+    
+    try:
+        session = start_session(args.connection_string, False, True)
+        account = add_account(session.book, args.name, args.currency, args.account_type_id, args.parent_account_guid)
+        end_session()
+    except Error as error:
+        print(error.message)
+        sys.exit(2)
+
+    print('Account created')
+
 if __name__ == "__main__":
 
     import argparse
@@ -1631,9 +1669,33 @@ if __name__ == "__main__":
     # Left this first as was originally causing issues when later
     parser.add_argument("connection_string", type=str, help="the file or database to connect to")
 
-    #python3 gncli.py mysql://root:s0meSort055sEcure@54.36.191.106/gnucash_test customer new
-    
     command_parser = parser.add_subparsers(help='command help')
+
+    ####
+
+    account_parser = command_parser.add_parser('account')
+    account_subparsers = account_parser.add_subparsers()
+
+    account_new_parser = account_subparsers.add_parser('new')
+    account_new_parser.add_argument("--name", type=str)
+    account_new_parser.add_argument("--currency", type=str)
+    account_new_parser.add_argument("--account_type_id", type=int)
+    account_new_parser.add_argument("--parent_account_guid", type=str)
+
+    account_new_parser.set_defaults(func=parse_add_account)
+
+    ####
+
+    invoice_parser = command_parser.add_parser('invoice')
+    invoice_subparsers = invoice_parser.add_subparsers()
+
+    invoice_new_parser = invoice_subparsers.add_parser('new')
+    invoice_new_parser.add_argument("--id", type=str)
+    invoice_new_parser.add_argument("--customer_id", type=str)
+    invoice_new_parser.add_argument("--currency", type=str)
+    invoice_new_parser.add_argument("--date_opened", type=str)
+    invoice_new_parser.add_argument("--notes", type=str)
+    invoice_new_parser.set_defaults(func=parse_add_invoice)
 
     ####
 
@@ -1652,7 +1714,10 @@ if __name__ == "__main__":
     customer_new_parser.add_argument("--phone", type=str)
     customer_new_parser.add_argument("--fax", type=str)
     customer_new_parser.add_argument("--email", type=str)
-    customer_new_parser.set_defaults(func=parse_add_customer)
+    customer_new_parser.set_defaults(func=parse_customer_add)
+
+    customer_new_parser = customer_subparsers.add_parser('list')
+    customer_new_parser.set_defaults(func=parse_customer_list)
 
     ####
 
@@ -1660,7 +1725,7 @@ if __name__ == "__main__":
     book_subparsers = book_parser.add_subparsers()
 
     book_new_parser = book_subparsers.add_parser('new')
-    book_new_parser.set_defaults(func=parse_new_book)
+    book_new_parser.set_defaults(func=parse_book_new)
 
     args = parser.parse_args()
     args.func(args)
