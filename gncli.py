@@ -1620,7 +1620,7 @@ def parse_customer_list(args):
         sys.exit(2)
 
     for customer in customers:
-        print(customer)
+        print(customer['id'] + " " + customer['name'])
 
 def parse_customer_add(args):
     
@@ -1636,7 +1636,7 @@ def parse_customer_add(args):
 
     print('Customer ' + customer['id'] + ' created')
 
-def parse_add_invoice(args):
+def parse_invoice_add(args):
     
     try:
         session = start_session(args.connection_string, False, True)
@@ -1649,6 +1649,26 @@ def parse_add_invoice(args):
 
     print('Invoice ' + invoice['id'] + ' created')
 
+def parse_invoice_post(args):
+    
+    try:
+        session = start_session(args.connection_string, False, True)
+        invoice = get_invoice(session.book, args.id)
+        if invoice is None:
+            raise Error('NoInvoice',
+            'An invoice with this ID does not exist',
+            {'field': 'id'})
+        invoice = update_invoice(session.book, invoice['id'], invoice['owner']['id'], invoice['currency'],
+                invoice['date_opened'], invoice['notes'], 1, args.posted_account_guid, args.posted_date,
+                args.due_date, args.posted_memo, args.posted_accumulatesplits, args.posted_autopay)
+        # * 19:47:18 ERROR <gnc.engine> QofQueryPredData* qof_query_string_predicate(QofQueryCompare, const char*, QofStringMatch, gboolean): assertion 'str' failed
+        end_session()
+    except Error as error:
+        print(error.message)
+        sys.exit(2)
+
+    print('Invoice ' + invoice['id'] + ' posted')
+
 def parse_add_account(args):
     
     try:
@@ -1660,6 +1680,31 @@ def parse_add_account(args):
         sys.exit(2)
 
     print('Account created')
+
+def parse_account_list(args):
+    
+    try:
+        session = start_session(args.connection_string, False, True)
+        accounts = get_accounts(session.book)
+        end_session()
+    except Error as error:
+        print(error.message)
+        sys.exit(2)
+
+    print(accounts)
+
+def parse_entry_add(args):
+    
+    try:
+        session = start_session(args.connection_string, False, True)
+        entry = add_entry(session.book, args.invoice_id, args.date, args.description, args.account_guid, args.quantity, args.price, args.discount_type, args.discount)
+        end_session()
+    except Error as error:
+        print(error.message)
+        sys.exit(2)
+
+    print('Entry created')
+
 
 if __name__ == "__main__":
 
@@ -1684,6 +1729,9 @@ if __name__ == "__main__":
 
     account_new_parser.set_defaults(func=parse_add_account)
 
+    account_new_parser = account_subparsers.add_parser('list')
+    account_new_parser.set_defaults(func=parse_account_list)
+
     ####
 
     invoice_parser = command_parser.add_parser('invoice')
@@ -1695,7 +1743,33 @@ if __name__ == "__main__":
     invoice_new_parser.add_argument("--currency", type=str)
     invoice_new_parser.add_argument("--date_opened", type=str)
     invoice_new_parser.add_argument("--notes", type=str)
-    invoice_new_parser.set_defaults(func=parse_add_invoice)
+    invoice_new_parser.set_defaults(func=parse_invoice_add)
+
+    invoice_new_parser = invoice_subparsers.add_parser('post')
+    invoice_new_parser.add_argument("--id", type=str)
+    invoice_new_parser.add_argument("--posted_account_guid", type=str)
+    invoice_new_parser.add_argument("--posted_date", type=str)
+    invoice_new_parser.add_argument("--due_date", type=str)
+    invoice_new_parser.add_argument("--posted_memo", type=str)
+    invoice_new_parser.add_argument("--posted_accumulatesplits", type=str)
+    invoice_new_parser.add_argument("--posted_autopay", type=str)
+    invoice_new_parser.set_defaults(func=parse_invoice_post)
+
+    ####
+
+    entry_parser = command_parser.add_parser('entry')
+    entry_subparsers = entry_parser.add_subparsers()
+
+    entry_new_parser = entry_subparsers.add_parser('new')
+    entry_new_parser.add_argument("--invoice_id", type=str)
+    entry_new_parser.add_argument("--date", type=str)
+    entry_new_parser.add_argument("--description", type=str)
+    entry_new_parser.add_argument("--account_guid", type=str)
+    entry_new_parser.add_argument("--quantity", type=str)
+    entry_new_parser.add_argument("--price", type=str)
+    entry_new_parser.add_argument("--discount_type", type=int)
+    entry_new_parser.add_argument("--discount", type=str)
+    entry_new_parser.set_defaults(func=parse_entry_add)
 
     ####
 
