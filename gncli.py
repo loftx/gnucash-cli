@@ -1705,14 +1705,23 @@ def parse_entry_add(args):
 
     print('Entry created')
 
+# Globals
+connection_string = ''
 
 if __name__ == "__main__":
 
+    import os
     import argparse
 
     parser = argparse.ArgumentParser()
-    # Left this first as was originally causing issues when later
-    parser.add_argument("connection_string", type=str, help="the file or database to connect to")
+
+    # get the connection string if it exists in an enironment variable, otherwise require it
+    if 'GNCLI_CONNECTION_STRING' in os.environ:
+        connection_string = os.environ['GNCLI_CONNECTION_STRING']
+        parser.set_defaults(connection_string=connection_string)
+    else:
+        # Left this first as was originally causing issues when later
+        parser.add_argument("connection_string", type=str, help="the file or database to connect to")
 
     command_parser = parser.add_subparsers(help='command help')
 
