@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 '''
 
@@ -1597,6 +1597,20 @@ class Error(Exception):
         self.message = message
         self.data = data
 
+def flatten_accounts(account):
+
+    accounts = [];
+    
+    accounts.append(account)
+
+    for subaccount in account['subaccounts']:
+        accounts = accounts + flatten_accounts(subaccount)
+
+    # we don't actually remove the subaccounts
+
+    return accounts
+
+
 def parse_book_new(args):
 
     try:
@@ -1653,15 +1667,19 @@ def parse_invoice_post(args):
     
     try:
         session = start_session(args.connection_string, False, True)
+
+        account_guid = account_guid_from_name(session.book, args.posted_account)
+
         invoice = get_invoice(session.book, args.id)
         if invoice is None:
             raise Error('NoInvoice',
             'An invoice with this ID does not exist',
             {'field': 'id'})
+            
         invoice = update_invoice(session.book, invoice['id'], invoice['owner']['id'], invoice['currency'],
-                invoice['date_opened'], invoice['notes'], 1, args.posted_account_guid, args.posted_date,
+                invoice['date_opened'], invoice['notes'], 1, account_guid, args.posted_date,
                 args.due_date, args.posted_memo, args.posted_accumulatesplits, args.posted_autopay)
-        # * 19:47:18 ERROR <gnc.engine> QofQueryPredData* qof_query_string_predicate(QofQueryCompare, const char*, QofStringMatch, gboolean): assertion 'str' failed
+
         end_session()
     except Error as error:
         print(error.message)
@@ -1691,22 +1709,35 @@ def parse_account_list(args):
         print(error.message)
         sys.exit(2)
 
-    print(accounts)
+    for account in flatten_accounts(accounts):
+        print(account['name'])
+
+def account_guid_from_name(book, account_name):
+    account_guid = ''
+
+    accounts = get_accounts(book)
+
+    for account in flatten_accounts(accounts):
+        if account_name.lower() == account['name'].lower():
+            account_guid = account['guid']
+            break
+
+    return account_guid
 
 def parse_entry_add(args):
-    
+
     try:
         session = start_session(args.connection_string, False, True)
-        entry = add_entry(session.book, args.invoice_id, args.date, args.description, args.account_guid, args.quantity, args.price, args.discount_type, args.discount)
+        
+        account_guid = account_guid_from_name(session.book, args.account)
+
+        entry = add_entry(session.book, args.invoice_id, args.date, args.description, account_guid, args.quantity, args.price, args.discount_type, args.discount)
         end_session()
     except Error as error:
         print(error.message)
         sys.exit(2)
 
     print('Entry created')
-
-# Globals
-connection_string = ''
 
 if __name__ == "__main__":
 
@@ -1756,7 +1787,7 @@ if __name__ == "__main__":
 
     invoice_new_parser = invoice_subparsers.add_parser('post')
     invoice_new_parser.add_argument("--id", type=str)
-    invoice_new_parser.add_argument("--posted_account_guid", type=str)
+    invoice_new_parser.add_argument("--posted_account", type=str)
     invoice_new_parser.add_argument("--posted_date", type=str)
     invoice_new_parser.add_argument("--due_date", type=str)
     invoice_new_parser.add_argument("--posted_memo", type=str)
@@ -1773,7 +1804,7 @@ if __name__ == "__main__":
     entry_new_parser.add_argument("--invoice_id", type=str)
     entry_new_parser.add_argument("--date", type=str)
     entry_new_parser.add_argument("--description", type=str)
-    entry_new_parser.add_argument("--account_guid", type=str)
+    entry_new_parser.add_argument("--account", type=str)
     entry_new_parser.add_argument("--quantity", type=str)
     entry_new_parser.add_argument("--price", type=str)
     entry_new_parser.add_argument("--discount_type", type=int)
