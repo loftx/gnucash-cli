@@ -855,7 +855,7 @@ def update_invoice(book, id, customer_id, currency_mnumonic, date_opened,
     invoice.SetNotes(notes)
 
     # post if currently unposted and posted=1
-    if (invoice.GetDatePosted() is None and posted == 1):
+    if ((invoice.GetDatePosted() is None or invoice.GetDatePosted().strftime("%Y-%m-%d") == '1970-01-01') and posted == 1):
         invoice.PostToAccount(posted_account, posted_date, due_date,
             posted_memo, posted_accumulatesplits, posted_autopay)
 
@@ -1677,7 +1677,7 @@ def parse_invoice_post(args):
             {'field': 'id'})
             
         invoice = update_invoice(session.book, invoice['id'], invoice['owner']['id'], invoice['currency'],
-                invoice['date_opened'], invoice['notes'], 1, account_guid, args.posted_date,
+                invoice['date_opened'], invoice['notes'], True, account_guid, args.posted_date,
                 args.due_date, args.posted_memo, args.posted_accumulatesplits, args.posted_autopay)
 
         end_session()
@@ -1791,8 +1791,8 @@ if __name__ == "__main__":
     invoice_new_parser.add_argument("--posted_date", type=str)
     invoice_new_parser.add_argument("--due_date", type=str)
     invoice_new_parser.add_argument("--posted_memo", type=str)
-    invoice_new_parser.add_argument("--posted_accumulatesplits", type=str)
-    invoice_new_parser.add_argument("--posted_autopay", type=str)
+    invoice_new_parser.add_argument("--posted_accumulatesplits", type=bool)
+    invoice_new_parser.add_argument("--posted_autopay", type=bool)
     invoice_new_parser.set_defaults(func=parse_invoice_post)
 
     ####
