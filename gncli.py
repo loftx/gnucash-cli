@@ -2,10 +2,9 @@
 
 '''
 
-gnucash_rest.py -- A Flask app which responds to REST requests
-with JSON responses
+gncli.py -- A command line interface for GnuCash
 
-Copyright (C) 2013 Tom Lofts <dev@loftx.co.uk>
+Copyright (C) 2019 Tom Lofts <dev@loftx.co.uk>
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License as
@@ -1624,7 +1623,7 @@ def parse_book_new(args):
 
 
 def parse_customer_list(args):
-    
+
     try:
         session = start_session(args.connection_string, False, True)
         customers = get_customers(session.book)
@@ -1635,8 +1634,11 @@ def parse_customer_list(args):
 
     customers = sorted(customers, key=lambda k: k['id']) 
 
-    for customer in customers:
-        print(customer['id'] + " " + customer['name'])
+    if args.format == 'json':
+        print(json.dumps(customers))
+    else:
+        for customer in customers:
+            print(customer['id'] + " " + customer['name'])
 
 def parse_customer_add(args):
     
@@ -1772,6 +1774,7 @@ if __name__ == "__main__":
 
     import os
     import argparse
+    import json
 
     parser = argparse.ArgumentParser()
 
@@ -1798,8 +1801,8 @@ if __name__ == "__main__":
 
     account_new_parser.set_defaults(func=parse_add_account)
 
-    account_new_parser = account_subparsers.add_parser('list')
-    account_new_parser.set_defaults(func=parse_account_list)
+    account_list_parser = account_subparsers.add_parser('list')
+    account_list_parser.set_defaults(func=parse_account_list)
 
     ####
 
@@ -1814,15 +1817,15 @@ if __name__ == "__main__":
     invoice_new_parser.add_argument("--notes", type=str)
     invoice_new_parser.set_defaults(func=parse_invoice_add)
 
-    invoice_new_parser = invoice_subparsers.add_parser('post')
-    invoice_new_parser.add_argument("--id", type=str)
-    invoice_new_parser.add_argument("--posted_account", type=str)
-    invoice_new_parser.add_argument("--posted_date", type=str)
-    invoice_new_parser.add_argument("--due_date", type=str)
-    invoice_new_parser.add_argument("--posted_memo", type=str)
-    invoice_new_parser.add_argument("--posted_accumulatesplits", type=bool)
-    invoice_new_parser.add_argument("--posted_autopay", type=bool)
-    invoice_new_parser.set_defaults(func=parse_invoice_post)
+    invoice_post_parser = invoice_subparsers.add_parser('post')
+    invoice_post_parser.add_argument("--id", type=str)
+    invoice_post_parser.add_argument("--posted_account", type=str)
+    invoice_post_parser.add_argument("--posted_date", type=str)
+    invoice_post_parser.add_argument("--due_date", type=str)
+    invoice_post_parser.add_argument("--posted_memo", type=str)
+    invoice_post_parser.add_argument("--posted_accumulatesplits", type=bool)
+    invoice_post_parser.add_argument("--posted_autopay", type=bool)
+    invoice_post_parser.set_defaults(func=parse_invoice_post)
 
     ####
 
@@ -1859,8 +1862,9 @@ if __name__ == "__main__":
     customer_new_parser.add_argument("--email", type=str)
     customer_new_parser.set_defaults(func=parse_customer_add)
 
-    customer_new_parser = customer_subparsers.add_parser('list')
-    customer_new_parser.set_defaults(func=parse_customer_list)
+    customer_list_parser = customer_subparsers.add_parser('list')
+    customer_list_parser.add_argument("--format", type=str)
+    customer_list_parser.set_defaults(func=parse_customer_list)
 
     ####
 
