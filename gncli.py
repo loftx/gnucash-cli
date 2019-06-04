@@ -1633,6 +1633,8 @@ def parse_customer_list(args):
         print(error.message)
         sys.exit(2)
 
+    customers = sorted(customers, key=lambda k: k['id']) 
+
     for customer in customers:
         print(customer['id'] + " " + customer['name'])
 
@@ -1739,6 +1741,33 @@ def parse_entry_add(args):
 
     print('Entry created')
 
+def parse_guestpost_add(args):
+    
+    try:
+        session = start_session(args.connection_string, False, True)
+
+        account_guid = account_guid_from_name(session.book, 'Sales')
+        posted_account_guid = account_guid_from_name(session.book, 'Accounts Receivable')
+
+        invoice = add_invoice(session.book, args.id, args.customer_id, args.currency,
+                args.date_opened, args.notes)
+
+        if invoice is None:
+            raise Error('NoInvoice',
+            'An invoice with this ID does not exist',
+            {'field': 'id'})
+
+        entry = add_entry(session.book, invoice['id'], args.date_opened, args.description, account_guid, 1, args.price, 1, args.discount)
+        invoice = update_invoice(session.book, invoice['id'], invoice['owner']['id'], invoice['currency'],
+                invoice['date_opened'], invoice['notes'], True, posted_account_guid, args.date_opened,
+                args.due_date, '', False, False)
+        end_session()
+    except Error as error:
+        print(error.message)
+        sys.exit(2)
+
+    print('Guest post ' + invoice['id'] + ' created and posted')
+
 if __name__ == "__main__":
 
     import os
@@ -1840,6 +1869,26 @@ if __name__ == "__main__":
 
     book_new_parser = book_subparsers.add_parser('new')
     book_new_parser.set_defaults(func=parse_book_new)
+
+    ####
+
+    guestpost_parser = command_parser.add_parser('guestpost')
+    guestpost_subparsers = guestpost_parser.add_subparsers()
+
+    guestpost_new_parser = guestpost_subparsers.add_parser('new')
+    guestpost_new_parser.add_argument("--id", type=str)
+    guestpost_new_parser.add_argument("--customer_id", type=str)
+    guestpost_new_parser.add_argument("--currency", type=str)
+    guestpost_new_parser.add_argument("--date_opened", type=str)
+    guestpost_new_parser.add_argument("--notes", type=str)
+
+    guestpost_new_parser.add_argument("--description", type=str)
+    guestpost_new_parser.add_argument("--price", type=str)
+    guestpost_new_parser.add_argument("--discount", type=str)
+
+    guestpost_new_parser.add_argument("--due_date", type=str)
+
+    guestpost_new_parser.set_defaults(func=parse_guestpost_add)
 
     args = parser.parse_args()
     args.func(args)
