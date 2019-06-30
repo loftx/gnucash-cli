@@ -1654,6 +1654,29 @@ def parse_customer_add(args):
 
     print('Customer ' + customer['id'] + ' created')
 
+def parse_invoice_list(args):
+
+    try:
+        session = start_session(args.connection_string, False, True)
+        # Assume we're only interested in posted, unpaid invoices... (this should be an option)
+        invoices = get_invoices(session.book, {
+            'is_posted': 1,
+            'is_paid': 0,
+            'is_active': 1
+        })
+        end_session()
+    except Error as error:
+        print(error.message)
+        sys.exit(2)
+
+    invoices = sorted(invoices, key=lambda k: k['id']) 
+
+    if args.format == 'json':
+        print(json.dumps(invoices))
+    else:
+        for invoice in invoices:
+            print(invoices['id'])
+
 def parse_invoice_add(args):
     
     try:
@@ -1748,8 +1771,19 @@ def parse_guestpost_add(args):
     try:
         session = start_session(args.connection_string, False, True)
 
-        account_guid = account_guid_from_name(session.book, 'Sales')
-        posted_account_guid = account_guid_from_name(session.book, 'Accounts Receivable')
+        if args.currency == 'GBP':
+            account_guid = account_guid_from_name(session.book, 'Sales')
+            posted_account_guid = account_guid_from_name(session.book, 'Accounts Receivable')
+        elif args.currency == 'USD': 
+            account_guid = account_guid_from_name(session.book, 'Sales (USD)')
+            posted_account_guid = account_guid_from_name(session.book, 'Accounts Receivable (USD)')
+        elif args.currency == 'EUR':
+            account_guid = account_guid_from_name(session.book, 'Sales (EUR)')
+            posted_account_guid = account_guid_from_name(session.book, 'Accounts Receivable (EUR)')
+        else:
+            raise Error('InvalidCurrency',
+            'An invalid posting currency was specified',
+            {'field': 'currency'})
 
         invoice = add_invoice(session.book, args.id, args.customer_id, args.currency,
                 args.date_opened, args.notes)
@@ -1808,6 +1842,10 @@ if __name__ == "__main__":
 
     invoice_parser = command_parser.add_parser('invoice')
     invoice_subparsers = invoice_parser.add_subparsers()
+
+    invoice_list_parser = invoice_subparsers.add_parser('list')
+    invoice_list_parser.add_argument("--format", type=str)
+    invoice_list_parser.set_defaults(func=parse_invoice_list)
 
     invoice_new_parser = invoice_subparsers.add_parser('new')
     invoice_new_parser.add_argument("--id", type=str)
