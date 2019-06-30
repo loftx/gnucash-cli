@@ -1658,24 +1658,38 @@ def parse_invoice_list(args):
 
     try:
         session = start_session(args.connection_string, False, True)
-        # Assume we're only interested in posted, unpaid invoices... (this should be an option)
-        invoices = get_invoices(session.book, {
-            'is_posted': 1,
-            'is_paid': 0,
-            'is_active': 1
-        })
+        
+        options = {}
+
+        if args.posted == '1':
+            options['is_posted'] = 1
+        elif args.posted == '0':
+            options['is_posted'] = 0
+
+        if args.paid == '1':
+            options['is_paid'] = 1
+        elif args.paid == '0':
+            options['is_paid'] = 0
+
+        if args.active == '1':
+            options['is_active'] = 1
+        elif args.active == '0':
+            options['is_active'] = 0
+
+        invoices = get_invoices(session.book, options)
+
         end_session()
     except Error as error:
         print(error.message)
         sys.exit(2)
 
-    invoices = sorted(invoices, key=lambda k: k['id']) 
+    invoices = sorted(invoices, key=lambda k: k['id'])  
 
     if args.format == 'json':
         print(json.dumps(invoices))
     else:
         for invoice in invoices:
-            print(invoices['id'])
+            print(invoice['id'])
 
 def parse_invoice_add(args):
     
@@ -1785,6 +1799,7 @@ def parse_guestpost_add(args):
             'An invalid posting currency was specified',
             {'field': 'currency'})
 
+
         invoice = add_invoice(session.book, args.id, args.customer_id, args.currency,
                 args.date_opened, args.notes)
 
@@ -1845,6 +1860,9 @@ if __name__ == "__main__":
 
     invoice_list_parser = invoice_subparsers.add_parser('list')
     invoice_list_parser.add_argument("--format", type=str)
+    invoice_list_parser.add_argument("--active", type=str)
+    invoice_list_parser.add_argument("--posted", type=str)
+    invoice_list_parser.add_argument("--paid", type=str)
     invoice_list_parser.set_defaults(func=parse_invoice_list)
 
     invoice_new_parser = invoice_subparsers.add_parser('new')
